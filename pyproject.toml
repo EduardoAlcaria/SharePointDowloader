@@ -1,0 +1,19 @@
+[project]
+name            = "sp-download"
+version         = "0.1.0"
+description     = "Download rápido e paralelo de arquivos grandes do SharePoint"
+requires-python = ">=3.10"
+dependencies    = [
+    "msal>=1.28",
+    "requests>=2.31",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+sp-dl       = "sp_download.cli:main"
+sp-download = "sp_download.cli:main"
+
+[build-system]
+requires      = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
