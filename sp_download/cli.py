@@ -316,6 +316,83 @@ def run(urls: list[str], out_dir: Path, extract: bool = False) -> None:
                     console.print(f"  [red]✗[/red] Failed to extract {zip_path.name}: {exc}")
 
 
+def list_main() -> None:
+    import sp_download.config as cfg
+
+    ap = argparse.ArgumentParser(
+        description="List files in a SharePoint folder without downloading",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    ap.add_argument("url", nargs="+", help="SharePoint sharing URL(s)")
+    ap.add_argument("-f", "--filter", dest="term", default="", help="Filter files by term (case-insensitive)")
+    ap.add_argument("--client-id", default=CLIENT_ID, help="Override Azure AD client ID")
+    ap.add_argument("--reset-auth", action="store_true", help="Clear cached credentials and re-authenticate")
+
+    args = ap.parse_args()
+    cfg.CLIENT_ID = args.client_id
+
+    if args.reset_auth and TOKEN_CACHE.exists():
+        TOKEN_CACHE.unlink()
+        console.print("[yellow]Auth cache cleared.[/yellow]\n")
+
+    urls = _validate_urls(args.url)
+    if not urls:
+        console.print("[red]No valid URLs provided.[/red]")
+        sys.exit(1)
+
+    try:
+        token = get_token()
+    except Exception as exc:
+        console.print(f"\n[bold red]Auth error:[/bold red] {exc}")
+        sys.exit(1)
+
+    all_files: list[dict] = []
+    console.print(f"\n[bold blue]Resolving {len(urls)} link(s)...[/bold blue]")
+
+    with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+        future_to_url = {pool.submit(_resolve_url, url, token): url for url in urls}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                resolved = future.result()
+                all_files.extend(resolved)
+                console.print(f"  [green]✓[/green] {url[:80]}  →  {len(resolved)} file(s)")
+            except Exception as exc:
+                console.print(f"  [red]✗[/red] {url[:80]}\n    [red]{exc}[/red]")
+
+    if not all_files:
+        console.print("\n[yellow]No files found.[/yellow]")
+        return
+
+    term = args.term.lower()
+    if term:
+        filtered = [f for f in all_files if term in f["rel_path"].lower()]
+    else:
+        filtered = all_files
+
+    tbl = Table(
+        title=f"Files{f' matching [bold]{args.term}[/bold]' if term else ''}",
+        box=box.ROUNDED,
+        expand=True,
+    )
+    tbl.add_column("#", style="dim", width=5, justify="right")
+    tbl.add_column("Source", style="magenta", no_wrap=True)
+    tbl.add_column("Path", style="white")
+    tbl.add_column("Size", style="cyan", justify="right")
+
+    for i, f in enumerate(filtered, 1):
+        tbl.add_row(str(i), f.get("source_name", ""), f["rel_path"], fmt_size(f["size"]))
+
+    console.print()
+    console.print(tbl)
+
+    total_bytes = sum(f["size"] for f in filtered)
+    match_note = f" (filtered from {len(all_files)})" if term else ""
+    console.print(
+        f"\n[bold cyan]{len(filtered)} file(s){match_note} — {fmt_size(total_bytes)} total[/bold cyan]\n"
+    )
+
+
 def main() -> None:
     import sp_download.config as cfg
 
