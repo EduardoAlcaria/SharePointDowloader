@@ -26,7 +26,7 @@ from rich.table import Table
 
 from .auth import get_token
 from .config import CHUNK_SIZE, CLIENT_ID, MAX_WORKERS, TOKEN_CACHE, console
-from .downloader import cleanup_tmp, download_one
+from .downloader import download_one
 from .graph import list_folder_files, resolve_link
 from .ui import fmt_eta, fmt_size
 
@@ -49,6 +49,7 @@ class LiveDisplay:
             files_done = self._state["files_done"]
             files_failed = self._state["files_failed"]
             total_bytes = self._state["total_bytes"]
+            merging = set(self._state.get("merging", set()))
 
         dt = now - self._prev_t
         if dt >= 0.3:
@@ -85,13 +86,20 @@ class LiveDisplay:
             "Elapsed",
             fmt_eta(now - self._t0),
         )
+        if merging:
+            t.add_row(
+                "Merging",
+                f"[bold yellow]{', '.join(sorted(merging))}[/bold yellow]",
+                "",
+                "",
+            )
 
         panel = Panel(t, title="[bold green] SharePoint Downloader [/bold green]", border_style="green")
         return Group(panel, self._progress)
 
 
-def _resolve_url(url: str, token: str) -> list[dict]:
-    item = resolve_link(url, token)
+def _resolve_url(url: str, token: str, verbose: bool = False) -> list[dict]:
+    item = resolve_link(url, token, verbose=verbose)
     if item["type"] == "folder":
         source_name = item["name"]
         files = list_folder_files(item["drive_id"], item["item_id"], token, source_name)
@@ -201,7 +209,7 @@ def extract_zip(zip_path: Path) -> None:
     console.print(f"  [green]✓[/green] Extracted to [cyan]{extract_to}[/cyan]")
 
 
-def run(urls: list[str], out_dir: Path, extract: bool = False) -> None:
+def run(urls: list[str], out_dir: Path, extract: bool = False, verbose: bool = False) -> None:
     urls = _validate_urls(urls)
     if not urls:
         console.print("[red]No valid URLs provided.[/red]")
@@ -213,15 +221,15 @@ def run(urls: list[str], out_dir: Path, extract: bool = False) -> None:
     console.print(f"\n[bold blue]Resolving {len(urls)} link(s)...[/bold blue]")
 
     with ThreadPoolExecutor(max_workers=len(urls)) as pool:
-        future_to_url = {pool.submit(_resolve_url, url, token): url for url in urls}
+        future_to_url = {pool.submit(_resolve_url, url, token, verbose): url for url in urls}
         for future in as_completed(future_to_url):
             url = future_to_url[future]
             try:
                 resolved = future.result()
                 files.extend(resolved)
-                console.print(f"  [green]✓[/green] {url[:80]}  →  {len(resolved)} file(s)")
+                console.print(f"  [green]✓[/green] {url[:120]}  →  {len(resolved)} file(s)")
             except Exception as exc:
-                console.print(f"  [red]✗[/red] {url[:80]}\n    [red]{exc}[/red]")
+                console.print(f"  [red]✗[/red] {url[:120]}\n    [red]{exc}[/red]")
 
     if not files:
         console.print("\n[yellow]No files to download.[/yellow]")
@@ -246,6 +254,7 @@ def run(urls: list[str], out_dir: Path, extract: bool = False) -> None:
         "files_total": len(files),
         "files_done": 0,
         "files_failed": 0,
+        "merging": set(),
     }
     lock = threading.Lock()
     t0 = time.time()
@@ -276,11 +285,10 @@ def run(urls: list[str], out_dir: Path, extract: bool = False) -> None:
     def process_link(link_files: list[dict]) -> None:
         for file_info in link_files:
             try:
-                download_one(file_info, out_dir, progress, state, lock)
+                download_one(file_info, out_dir, progress, state, lock, token=token)
                 with results_lock:
                     results.append((file_info, None))
             except Exception as exc:
-                cleanup_tmp(out_dir / file_info.get("rel_path", file_info["name"]))
                 with lock:
                     state["files_failed"] += 1
                 with results_lock:
@@ -327,6 +335,7 @@ def list_main() -> None:
     ap.add_argument("-f", "--filter", dest="term", default="", help="Filter files by term (case-insensitive)")
     ap.add_argument("--client-id", default=CLIENT_ID, help="Override Azure AD client ID")
     ap.add_argument("--reset-auth", action="store_true", help="Clear cached credentials and re-authenticate")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Show resolution trace (Graph API calls)")
 
     args = ap.parse_args()
     cfg.CLIENT_ID = args.client_id
@@ -350,15 +359,15 @@ def list_main() -> None:
     console.print(f"\n[bold blue]Resolving {len(urls)} link(s)...[/bold blue]")
 
     with ThreadPoolExecutor(max_workers=len(urls)) as pool:
-        future_to_url = {pool.submit(_resolve_url, url, token): url for url in urls}
+        future_to_url = {pool.submit(_resolve_url, url, token, args.verbose): url for url in urls}
         for future in as_completed(future_to_url):
             url = future_to_url[future]
             try:
                 resolved = future.result()
                 all_files.extend(resolved)
-                console.print(f"  [green]✓[/green] {url[:80]}  →  {len(resolved)} file(s)")
+                console.print(f"  [green]✓[/green] {url[:120]}  →  {len(resolved)} file(s)")
             except Exception as exc:
-                console.print(f"  [red]✗[/red] {url[:80]}\n    [red]{exc}[/red]")
+                console.print(f"  [red]✗[/red] {url[:120]}\n    [red]{exc}[/red]")
 
     if not all_files:
         console.print("\n[yellow]No files found.[/yellow]")
@@ -407,6 +416,7 @@ def main() -> None:
     ap.add_argument("--client-id", default=CLIENT_ID, help="Override Azure AD client ID")
     ap.add_argument("--reset-auth", action="store_true", help="Clear cached credentials and re-authenticate")
     ap.add_argument("-x", "--extract", action="store_true", help="Extract ZIP files after download")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Show resolution trace (Graph API calls)")
 
     args = ap.parse_args()
 
@@ -422,7 +432,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        run(args.url, out_dir, extract=args.extract)
+        run(args.url, out_dir, extract=args.extract, verbose=args.verbose)
     except KeyboardInterrupt:
         console.print("\n[red]Download cancelled.[/red]")
         sys.exit(1)
