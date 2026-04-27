@@ -148,7 +148,7 @@ def main() -> None:
     total_bytes = sum(f["size"] for f in filtered)
     match_note = f" (filtered from {len(all_files)})" if term else ""
     console.print(
-        f"\n[bold cyan]{len(filtered)} file(s){match_note} — {fmt_size(total_bytes)} total[/bold cyan]\n"
+        f"\n[bold cyan]{len(filtered)} file(s){match_note} - {fmt_size(total_bytes)} total[/bold cyan]\n"
     )
 
 
