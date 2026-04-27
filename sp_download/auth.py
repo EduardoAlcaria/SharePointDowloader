@@ -1,6 +1,7 @@
 import msal
 
-from .config import AUTHORITY, CLIENT_ID, SCOPES, TOKEN_CACHE, console
+from . import config
+from .config import TOKEN_CACHE, console
 
 
 def _load_cache() -> msal.SerializableTokenCache:
@@ -18,16 +19,22 @@ def _save_cache(cache: msal.SerializableTokenCache) -> None:
 def get_token() -> str:
     from rich.panel import Panel
 
+    if not config.CLIENT_ID:
+        raise RuntimeError(
+            "No Azure AD client ID configured.\n"
+            "Set the SP_CLIENT_ID environment variable or pass --client-id."
+        )
+
     cache = _load_cache()
-    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
+    app = msal.PublicClientApplication(config.CLIENT_ID, authority=config.AUTHORITY, token_cache=cache)
 
     result = None
     accounts = app.get_accounts()
     if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        result = app.acquire_token_silent(config.SCOPES, account=accounts[0])
 
     if not result:
-        flow = app.initiate_device_flow(scopes=SCOPES)
+        flow = app.initiate_device_flow(scopes=config.SCOPES)
         if "user_code" not in flow:
             raise RuntimeError(f"Device flow failed: {flow.get('error_description')}")
 
